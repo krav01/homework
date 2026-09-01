@@ -150,7 +150,7 @@ content types return `415`, malformed input `400`, and oversized bodies `413`.
 - Both runtime containers are non-root, drop Linux capabilities, use a
   read-only root filesystem, and declare CPU/memory requests and limits.
 - Readiness and liveness probes separate process health from Service traffic.
-- RBAC grants only the CRD, status, Pod, and lease operations required by the
+- RBAC grants only the CRD, status, Pod, event, and lease operations required by the
   controller.
 - `requirements.sh` is repeatable: it refreshes fixed development image tags,
   waits for CRD discovery, and proves the application replacement is Ready.
@@ -188,7 +188,9 @@ validated before Docker or Kubernetes is involved.
   its replacement, rolls out a changed template and checks persistence again,
   then creates a crashing EtherealPod and waits for `RESTARTS` to increase.
   HTTP clients stop waiting on either successful or failed completion; only the
-  initial cleanup explicitly accepts an HTTP `404`.
+  initial cleanup explicitly accepts an HTTP `404`. After Pod replacement, a
+  retryable health GET waits for Service routing to catch up; mutations are
+  never retried automatically.
 
 ## Known limits and production evolution
 

@@ -66,6 +66,13 @@ api_request() {
   printf '%s' "$response"
 }
 
+wait_for_service() {
+  # Pod readiness can precede Service routing updates. Retry only this safe GET;
+  # mutation requests must never be retried after an uncertain response.
+  api_request --retry 15 --retry-delay 1 --retry-connrefused --retry-max-time 30 \
+    "http://$app_name/healthz" >/dev/null
+}
+
 wait_for_replacement() {
   local old_pod="$1"
   local new_pod=""
@@ -76,6 +83,7 @@ wait_for_replacement() {
     if [[ -n "$new_pod" && "$new_pod" != "$old_pod" ]] && \
       kubectl wait pod "$new_pod" -n "$namespace" \
         --for=condition=Ready --timeout=2s >/dev/null 2>&1; then
+      wait_for_service || return 1
       printf '%s' "$new_pod"
       return 0
     fi
@@ -108,6 +116,8 @@ kubectl wait etherealpod "$app_name" -n "$namespace" \
   --for=condition=Ready --timeout=120s >/dev/null
 kubectl get eps -n "$namespace" | \
   grep -Eq '^NAME[[:space:]]+AGE[[:space:]]+RESTARTS'
+
+wait_for_service
 
 # Make the persistence assertion repeatable when the script is run more than once.
 api_request --allow-not-found -X DELETE \
