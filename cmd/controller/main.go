@@ -15,8 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	sundayv1alpha1 "github.com/codex/sunday-system/api/v1alpha1"
-	"github.com/codex/sunday-system/internal/controller"
+	sundayv1alpha1 "github.com/krav01/homework/api/v1alpha1"
+	"github.com/krav01/homework/internal/controller"
 )
 
 func main() {

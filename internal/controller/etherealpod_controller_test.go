@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,10 +11,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	sundayv1alpha1 "github.com/codex/sunday-system/api/v1alpha1"
+	sundayv1alpha1 "github.com/krav01/homework/api/v1alpha1"
 )
 
 func TestEtherealPodReconciler_CreatesManagedPod(t *testing.T) {
@@ -54,12 +57,16 @@ func TestEtherealPodReconciler_ReplacesTerminalPod(t *testing.T) {
 
 	scheme := testScheme(t)
 	ep := testEtherealPod()
-	failed := controlledPod(ep, "failed", corev1.PodFailed)
+	failed := controlledPod(t, ep, "failed", corev1.PodFailed)
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(ep).WithObjects(ep, failed).Build()
 	reconciler := &EtherealPodReconciler{Client: client, Scheme: scheme}
 
 	if _, err := reconciler.Reconcile(context.Background(), requestFor(ep)); err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
+	}
+	// Deletion and replacement occur in separate reconciliation passes.
+	if _, err := reconciler.Reconcile(context.Background(), requestFor(ep)); err != nil {
+		t.Fatal(err)
 	}
 	var pods corev1.PodList
 	if err := client.List(context.Background(), &pods); err != nil {
@@ -111,9 +118,9 @@ func TestEtherealPodReconciler_DeletesUnlabelledDuplicate(t *testing.T) {
 
 	scheme := testScheme(t)
 	ep := testEtherealPod()
-	old := controlledPod(ep, "old", corev1.PodRunning)
+	old := controlledPod(t, ep, "old", corev1.PodRunning)
 	old.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Minute))
-	newPod := controlledPod(ep, "new", corev1.PodRunning)
+	newPod := controlledPod(t, ep, "new", corev1.PodRunning)
 	newPod.CreationTimestamp = metav1.Now()
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(ep).WithObjects(ep, old, newPod).Build()
 	reconciler := &EtherealPodReconciler{Client: client, Scheme: scheme}
@@ -135,7 +142,7 @@ func TestEtherealPodReconciler_UpdatesRestartStatus(t *testing.T) {
 
 	scheme := testScheme(t)
 	ep := testEtherealPod()
-	pod := controlledPod(ep, "running", corev1.PodRunning)
+	pod := controlledPod(t, ep, "running", corev1.PodRunning)
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{RestartCount: 4}}
 	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(ep).WithObjects(ep, pod).Build()
@@ -201,11 +208,17 @@ func testEtherealPod() *sundayv1alpha1.EtherealPod {
 	}
 }
 
-func controlledPod(ep *sundayv1alpha1.EtherealPod, name string, phase corev1.PodPhase) *corev1.Pod {
+func controlledPod(t *testing.T, ep *sundayv1alpha1.EtherealPod, name string, phase corev1.PodPhase) *corev1.Pod {
+	t.Helper()
+	hash, err := templateHash(&ep.Spec.Template)
+	if err != nil {
+		t.Fatal(err)
+	}
 	controller := true
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name, Namespace: ep.Namespace, UID: types.UID(name),
+			Annotations: map[string]string{templateHashAnnotation: hash},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: ep.APIVersion, Kind: ep.Kind, Name: ep.Name, UID: ep.UID, Controller: &controller,
 			}},
@@ -216,4 +229,137 @@ func controlledPod(ep *sundayv1alpha1.EtherealPod, name string, phase corev1.Pod
 
 func requestFor(ep *sundayv1alpha1.EtherealPod) ctrl.Request {
 	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ep.Namespace, Name: ep.Name}}
+}
+
+func TestEtherealPodReconciler_WaitsForTerminatingPod(t *testing.T) {
+	scheme := testScheme(t)
+	ep := testEtherealPod()
+	old := controlledPod(t, ep, "old", corev1.PodRunning)
+	old.Finalizers = []string{"example.com/hold"}
+	now := metav1.Now()
+	old.DeletionTimestamp = &now
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(ep).WithObjects(ep, old).Build()
+	r := &EtherealPodReconciler{Client: cl, Scheme: scheme}
+	result, err := r.Reconcile(context.Background(), requestFor(ep))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pods corev1.PodList
+	if err := cl.List(context.Background(), &pods); err != nil {
+		t.Fatal(err)
+	}
+	if len(pods.Items) != 1 || pods.Items[0].Name != "old" || result.RequeueAfter == 0 {
+		t.Fatalf("created replacement before termination: %#v", pods.Items)
+	}
+	var status sundayv1alpha1.EtherealPod
+	if err := cl.Get(context.Background(), requestFor(ep).NamespacedName, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Status.Ready {
+		t.Fatal("terminating resource is Ready")
+	}
+}
+
+func TestEtherealPodReconciler_RollsOutChangedTemplate(t *testing.T) {
+	scheme := testScheme(t)
+	ep := testEtherealPod()
+	old := controlledPod(t, ep, "old", corev1.PodRunning)
+	old.Finalizers = []string{"example.com/hold"}
+	ep.Spec.Template.Spec.Containers[0].Image = "sunday-app:updated"
+	ep.Generation = 2
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(ep).WithObjects(ep, old).Build()
+	r := &EtherealPodReconciler{Client: cl, Scheme: scheme}
+	for range 2 {
+		if _, err := r.Reconcile(context.Background(), requestFor(ep)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pods corev1.PodList
+	if err := cl.List(context.Background(), &pods); err != nil {
+		t.Fatal(err)
+	}
+	if len(pods.Items) != 1 || pods.Items[0].DeletionTimestamp.IsZero() {
+		t.Fatal("rollout must wait for old Pod deletion")
+	}
+	old = &pods.Items[0]
+	old.Finalizers = nil
+	if err := cl.Update(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), requestFor(ep)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.List(context.Background(), &pods); err != nil {
+		t.Fatal(err)
+	}
+	if len(pods.Items) != 1 || pods.Items[0].Spec.Containers[0].Image != "sunday-app:updated" {
+		t.Fatalf("new template not deployed: %#v", pods.Items)
+	}
+	var updated sundayv1alpha1.EtherealPod
+	if err := cl.Get(context.Background(), requestFor(ep).NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Status.Conditions) != 1 || updated.Status.Conditions[0].ObservedGeneration != 2 {
+		t.Fatalf("conditions=%#v", updated.Status.Conditions)
+	}
+}
+
+func TestEtherealPodReconciler_LongNames(t *testing.T) {
+	ep := testEtherealPod()
+	ep.Name = strings.Repeat("a", 100)
+	r := &EtherealPodReconciler{Scheme: testScheme(t)}
+	pod, err := r.newPod(ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range pod.Labels {
+		if problems := validation.IsValidLabelValue(value); len(problems) > 0 {
+			t.Fatalf("label %s: %v", key, problems)
+		}
+	}
+	if pod.Annotations[ownerNameAnnotation] != ep.Name {
+		t.Fatal("full owner name lost")
+	}
+	if len(pod.GenerateName) > 53 {
+		t.Fatal("generated name prefix too long")
+	}
+}
+
+func TestEtherealPodStatus_ZeroRestarts(t *testing.T) {
+	data, err := json.Marshal(sundayv1alpha1.EtherealPodStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"restarts":0`) {
+		t.Fatalf("zero counter omitted: %s", data)
+	}
+}
+
+func TestEtherealPodReconciler_RefreshesObservedGeneration(t *testing.T) {
+	scheme := testScheme(t)
+	ep := testEtherealPod()
+	ep.Generation = 1
+	pod := controlledPod(t, ep, "ready", corev1.PodRunning)
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(ep).WithObjects(ep, pod).Build()
+	r := &EtherealPodReconciler{Client: cl, Scheme: scheme}
+	if _, err := r.Reconcile(context.Background(), requestFor(ep)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(context.Background(), requestFor(ep).NamespacedName, ep); err != nil {
+		t.Fatal(err)
+	}
+	ep.Generation = 2
+	if err := cl.Update(context.Background(), ep); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), requestFor(ep)); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(context.Background(), requestFor(ep).NamespacedName, ep); err != nil {
+		t.Fatal(err)
+	}
+	if ep.Status.Conditions[0].ObservedGeneration != 2 {
+		t.Fatal("stale observedGeneration")
+	}
 }

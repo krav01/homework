@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"mime"
 	"net/http"
 	"regexp"
 	"strconv"
-	"strings"
 
-	"github.com/codex/sunday-system/internal/store"
+	"github.com/krav01/homework/internal/store"
 )
 
 const maxBodyBytes = 1 << 20
@@ -59,46 +60,57 @@ func writeProduct(groceries GroceryStore) http.HandlerFunc {
 	}
 
 	return func(writer http.ResponseWriter, request *http.Request) {
-		body := requestBody{
-			UserID:      request.URL.Query().Get("user_id"),
-			ProductName: request.URL.Query().Get("product_name"),
+		var body requestBody
+		request.Body = http.MaxBytesReader(writer, request.Body, maxBodyBytes)
+		mediaType := ""
+		if value := request.Header.Get("Content-Type"); value != "" {
+			parsed, _, err := mime.ParseMediaType(value)
+			if err != nil {
+				writeError(writer, http.StatusUnsupportedMediaType, errors.New("invalid content type"))
+				return
+			}
+			mediaType = parsed
 		}
-		if value := request.URL.Query().Get("amount"); value != "" {
-			amount, err := strconv.ParseInt(value, 10, 64)
+		switch mediaType {
+		case "application/json":
+			// JSON is the complete payload. URL parameters never fill missing fields.
+			decoder := json.NewDecoder(request.Body)
+			decoder.DisallowUnknownFields()
+			var decoded *requestBody
+			if err := decoder.Decode(&decoded); err != nil {
+				writeInputError(writer, err)
+				return
+			}
+			if decoded == nil {
+				writeError(writer, http.StatusBadRequest, errors.New("request body must be a JSON object"))
+				return
+			}
+			if err := ensureSingleJSONValue(decoder); err != nil {
+				writeInputError(writer, err)
+				return
+			}
+			body = *decoded
+		case "", "application/x-www-form-urlencoded":
+			if mediaType == "" && request.ContentLength != 0 {
+				writeError(writer, http.StatusUnsupportedMediaType, errors.New("content type is required for a request body"))
+				return
+			}
+			if err := request.ParseForm(); err != nil {
+				writeInputError(writer, err)
+				return
+			}
+			// ParseForm gives form-body values precedence over query parameters.
+			body.UserID = request.Form.Get("user_id")
+			body.ProductName = request.Form.Get("product_name")
+			amount, err := strconv.ParseInt(request.Form.Get("amount"), 10, 64)
 			if err != nil {
 				writeError(writer, http.StatusBadRequest, errors.New("amount must be an integer"))
 				return
 			}
 			body.Amount = amount
-		}
-
-		if strings.HasPrefix(request.Header.Get("Content-Type"), "application/json") {
-			request.Body = http.MaxBytesReader(writer, request.Body, maxBodyBytes)
-			decoder := json.NewDecoder(request.Body)
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&body); err != nil {
-				writeError(writer, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
-				return
-			}
-			if err := ensureSingleJSONValue(decoder); err != nil {
-				writeError(writer, http.StatusBadRequest, err)
-				return
-			}
-		} else if err := request.ParseForm(); err == nil {
-			if value := request.Form.Get("user_id"); value != "" {
-				body.UserID = value
-			}
-			if value := request.Form.Get("product_name"); value != "" {
-				body.ProductName = value
-			}
-			if value := request.Form.Get("amount"); value != "" {
-				amount, parseErr := strconv.ParseInt(value, 10, 64)
-				if parseErr != nil {
-					writeError(writer, http.StatusBadRequest, errors.New("amount must be an integer"))
-					return
-				}
-				body.Amount = amount
-			}
+		default:
+			writeError(writer, http.StatusUnsupportedMediaType, errors.New("unsupported content type"))
+			return
 		}
 
 		if err := validateName("user_id", body.UserID); err != nil {
@@ -120,6 +132,7 @@ func writeProduct(groceries GroceryStore) http.HandlerFunc {
 			return
 		}
 		if err != nil {
+			slog.ErrorContext(request.Context(), "persist product", "error", err)
 			writeError(writer, http.StatusInternalServerError, errors.New("persist product"))
 			return
 		}
@@ -147,6 +160,7 @@ func deleteProduct(groceries GroceryStore) http.HandlerFunc {
 
 		deleted, err := groceries.DeleteProduct(product)
 		if err != nil {
+			slog.ErrorContext(request.Context(), "persist product deletion", "error", err)
 			writeError(writer, http.StatusInternalServerError, errors.New("persist product deletion"))
 			return
 		}
@@ -167,10 +181,22 @@ func validateName(field, value string) error {
 
 func ensureSingleJSONValue(decoder *json.Decoder) error {
 	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return errors.New("request body must contain one JSON object")
+	err := decoder.Decode(&extra)
+	if errors.Is(err, io.EOF) {
+		return nil
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("invalid trailing JSON: %w", err)
+	}
+	return errors.New("request body must contain one JSON object")
+}
+
+func writeInputError(writer http.ResponseWriter, err error) {
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		writeError(writer, http.StatusRequestEntityTooLarge, errors.New("request body exceeds 1 MiB"))
+		return
+	}
+	writeError(writer, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 }
 
 func writeError(writer http.ResponseWriter, status int, err error) {

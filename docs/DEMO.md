@@ -87,7 +87,21 @@ kubectl get eps -n sunday-system
 
 The E2E script cleans up its crashing resource before it exits.
 
-## 5. Explain the design
+## 5. Demonstrate a template rollout
+
+Change a template annotation and watch the old Pod terminate before a new Pod
+appears. A service interruption during this serial rollout is expected.
+
+```bash
+kubectl patch etherealpod sunday-app -n sunday-system --type merge \
+  -p '{"spec":{"template":{"metadata":{"annotations":{"demo":"rollout-v2"}}}}}'
+kubectl get pods -n sunday-system -w
+```
+
+Once the replacement is Ready, read the saved product again. `make e2e` also
+checks this sequence automatically.
+
+## 6. Explain the design
 
 The points I would call out are:
 
@@ -95,7 +109,7 @@ The points I would call out are:
 - the kubelet handles container crashes, while the controller handles Pod
   deletion and terminal phases;
 - direct Pod ownership keeps restart reporting unambiguous;
-- atomic JSON on a PVC is sufficient for one writer and the time-box, while a
+- atomic JSON on a PVC with a lifetime file lock enforces one writer, while a
   database would be the next step for multiple replicas or large datasets;
 - controller-runtime supplies watches, reconciliation, leader election, and
   health endpoints without reimplementing Kubernetes plumbing;
