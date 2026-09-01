@@ -1,0 +1,84 @@
+name: Verify Sunday System
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-quality:
+    name: Go quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Test with race detector
+        run: go test -race -shuffle=on -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.12.2
+
+      - name: Scan reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+  kubernetes-e2e:
+    name: Docker and Kubernetes E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Install kind and kubectl
+        uses: helm/kind-action@v1.14.0
+        with:
+          install_only: true
+          version: v0.32.0
+          kubectl_version: v1.35.0
+
+      - name: Build images and deploy
+        run: ./requirements.sh
+
+      - name: Inspect built images
+        run: docker image inspect sunday-controller:dev sunday-app:dev >/dev/null
+
+      - name: Run live-cluster acceptance checks
+        run: make e2e
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get etherealpods -A -o wide || true
+          kubectl get pods -A -o wide || true
+          kubectl describe etherealpods -A || true
+          kubectl describe pods -n sunday-system || true
+          for pod in $(kubectl get pods -n sunday-system \
+            -l app.kubernetes.io/name=etherealpod-controller -o name 2>/dev/null); do
+            kubectl logs -n sunday-system "$pod" --all-containers=true --prefix=true || true
+          done
+          docker images || true
