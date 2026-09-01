@@ -74,13 +74,13 @@ kubectl get eps -n "$namespace" | \
 
 # Make the persistence assertion repeatable when the script is run more than once.
 api_request -X DELETE \
-  "http://$app_name/delete_product?product_name=e2eproduct" \
+  "http://$app_name/delete_product?product_name=testproduct" \
   >/dev/null 2>&1 || true
 
 echo "Writing a grocery item..."
 write_response="$(api_request -X POST \
   -H 'Content-Type: application/json' \
-  -d '{"user_id":"e2euser","product_name":"e2eproduct","amount":7}' \
+  -d '{"user_id":"testuser","product_name":"testproduct","amount":7}' \
   "http://$app_name/write")"
 if [[ "$write_response" != *'"total":7'* ]]; then
   echo "unexpected write response: $write_response" >&2
@@ -100,7 +100,7 @@ new_pod="$(wait_for_replacement "$old_pod")"
 echo "Replacement Pod is Ready: $new_pod"
 
 read_response="$(api_request \
-  "http://$app_name/get_product_amount?product_name=e2eproduct")"
+  "http://$app_name/get_product_amount?product_name=testproduct")"
 if [[ "$read_response" != *'"amount":7'* ]]; then
   echo "data did not survive Pod replacement: $read_response" >&2
   exit 1
@@ -126,6 +126,6 @@ restarts="$(wait_for_restart_count)"
 echo "Reported restart count: $restarts"
 
 api_request -X DELETE \
-  "http://$app_name/delete_product?product_name=e2eproduct" >/dev/null
+  "http://$app_name/delete_product?product_name=testproduct" >/dev/null
 
 echo "E2E checks passed: API persistence, Pod self-healing, and restart reporting."

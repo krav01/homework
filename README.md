@@ -134,7 +134,7 @@ and a replacement is created when no active managed Pod remains.
 
 ## Development checks
 
-Local checks require Go 1.26.5 or a compatible newer toolchain, as declared in
+Local checks require Go 1.26.6 or a compatible newer toolchain, as declared in
 `go.mod`, and `make`. Cluster deployment builds Go binaries inside Docker.
 
 ```bash
