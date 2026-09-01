@@ -22,11 +22,27 @@ trap cleanup EXIT
 
 api_request() {
   local client_name="sunday-e2e-client-$$-$RANDOM"
+  local response=""
+
+  # Short-lived clients can exit before kubectl attaches to their output.
+  # Wait for completion, then read the response from the retained Pod logs.
   kubectl run "$client_name" -n "$namespace" \
-    --quiet --rm -i --restart=Never \
+    --restart=Never \
     --labels="app.kubernetes.io/name=$client_label" \
     --image=curlimages/curl:8.12.1 \
-    --command -- curl -fsS "$@"
+    --command -- curl --fail-with-body --silent --show-error "$@" >/dev/null
+
+  if ! kubectl wait pod "$client_name" -n "$namespace" \
+    --for=jsonpath='{.status.phase}'=Succeeded --timeout=90s >/dev/null; then
+    kubectl logs "$client_name" -n "$namespace" >&2 || true
+    kubectl describe pod "$client_name" -n "$namespace" >&2 || true
+    return 1
+  fi
+
+  response="$(kubectl logs "$client_name" -n "$namespace")" || return 1
+  kubectl delete pod "$client_name" -n "$namespace" \
+    --ignore-not-found --wait=false >/dev/null
+  printf '%s' "$response"
 }
 
 wait_for_replacement() {
