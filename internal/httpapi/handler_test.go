@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -126,6 +127,62 @@ func TestHandler_RejectsInvalidInput(t *testing.T) {
 			NewHandler(newMemoryStore()).ServeHTTP(response, request)
 			if response.Code != http.StatusBadRequest {
 				t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandler_WriteBodyValidation(t *testing.T) {
+	const query = "/write?user_id=alice&product_name=apple&amount=1"
+	for _, test := range []struct {
+		name, target, contentType, body string
+		want                            int
+	}{
+		{"malformed form", query, "application/x-www-form-urlencoded", "amount=%", 400},
+		{"null JSON", query, "application/json", "null", 400},
+		{"empty JSON", query, "application/json", "", 400},
+		{"JSON does not inherit query", query, "application/json", `{"amount":2}`, 400},
+		{"array JSON", query, "application/json", "[]", 400},
+		{"malformed JSON", query, "application/json", "{", 400},
+		{"multiple JSON values", query, "application/json", `{"user_id":"alice","product_name":"apple","amount":1} {}`, 400},
+		{"oversize JSON", query, "application/json", `{"user_id":"` + strings.Repeat("a", maxBodyBytes) + `"}`, 413},
+		{"oversize form", query, "application/x-www-form-urlencoded", "user_id=" + strings.Repeat("a", maxBodyBytes), 413},
+		{"unsupported content type", query, "text/plain", "ignored", 415},
+		{"missing content type", query, "", "ignored", 415},
+		{"malformed content type", query, "application/json; broken", `{}`, 415},
+		{"malformed query", "/write?user_id=alice&product_name=apple&amount=1&bad=%", "", "", 400},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := newMemoryStore()
+			request := httptest.NewRequest(http.MethodPost, test.target, strings.NewReader(test.body))
+			if test.contentType != "" {
+				request.Header.Set("Content-Type", test.contentType)
+			}
+			response := httptest.NewRecorder()
+			NewHandler(s).ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, test.want, response.Body.String())
+			}
+			if amount := s.ProductAmount("apple"); amount != 0 {
+				t.Fatalf("rejected request wrote %d", amount)
+			}
+		})
+	}
+}
+
+func TestHandler_WriteParameterPrecedence(t *testing.T) {
+	for _, test := range []struct{ name, contentType, body string }{
+		{"JSON only", "application/json", `{"user_id":"alice","product_name":"apple","amount":2}`},
+		{"form overrides query", "application/x-www-form-urlencoded", "user_id=alice&product_name=apple&amount=2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := newMemoryStore()
+			request := httptest.NewRequest(http.MethodPost, "/write?user_id=bob&product_name=banana&amount=9", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", test.contentType)
+			response := httptest.NewRecorder()
+			NewHandler(s).ServeHTTP(response, request)
+			if response.Code != 201 || s.ProductAmount("apple") != 2 || s.ProductAmount("banana") != 0 {
+				t.Fatalf("response=%d %s", response.Code, response.Body.String())
 			}
 		})
 	}
