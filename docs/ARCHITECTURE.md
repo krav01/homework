@@ -42,9 +42,15 @@ flowchart LR
 - A container exit is recovered by the kubelet because the controller enforces
   `restartPolicy: Always`. This preserves the Pod identity and increments the
   Kubernetes restart counter.
-- A deleted, evicted, Failed, or Succeeded Pod is replaced by the controller.
+- A deleted, evicted, Failed, or Succeeded Pod is replaced by the controller
+  only after all old managed Pods disappear, including terminating Pods.
+- A hash of `spec.template` triggers serial replacement when the template
+  changes. Deletion completes before creation; a stuck finalizer blocks rollout.
+- Ownership labels use bounded values for long resource names, while an
+  annotation retains the full name. Owner references remain authoritative.
 - The status is eventually consistent with the current Pod. `RESTARTS` is the
-  sum of init- and application-container restart counts for that Pod.
+  sum of init- and application-container restart counts for that Pod, including
+  an explicit zero. Ready conditions track the observed resource generation.
 - Data belongs to a PVC rather than the Pod filesystem. Replacement therefore
   changes compute identity without changing data identity.
 
@@ -87,7 +93,8 @@ includes a ReplicaSet.
 Reusing Kubernetes `PodTemplateSpec` makes container, probe, security-context,
 resource, and volume configuration familiar to users. A smaller custom schema
 would be easier to validate but would unnecessarily invent another Pod API.
-The controller overrides only the invariant it owns: restart policy.
+The controller enforces restart policy and reserves its ownership labels and
+annotations, including the template hash used to detect changes.
 
 ### Flat packages with narrow boundaries
 
@@ -103,24 +110,38 @@ For this scope I chose atomic JSON on a PVC. The assignment needs durable data
 for one SundayApp Pod, not multi-replica transactions, and a nested
 `user -> product -> amount` map matches the requested model directly. Each
 mutation clones the state, writes a temporary file, flushes it, atomically
-renames it, and syncs the directory before publishing the new in-memory state.
+renames it, and syncs the directory before acknowledging success. Rename is the
+commit point: if the subsequent directory sync fails, memory still adopts the
+new file contents and further writes are blocked until the store is reopened.
+The client receives `500` with an uncertain outcome and should inspect the
+stored value before retrying an increment. Failures before rename preserve the
+old file and memory, and allow another write attempt.
+
+The process acquires a nonblocking exclusive `flock` on a stable sidecar file
+before reading data and keeps it until shutdown. The lock file is never removed:
+removing its inode could let a second process acquire a different lock. This
+requires Linux/macOS and reliable filesystem locking; RWO alone does not exclude
+multiple Pods on the same node. Empty, malformed, or invalid existing data files
+fail startup rather than silently discarding grocery data.
 
 This avoids an external database and CGO while protecting the previous file
 from partial writes. The tradeoffs are intentional:
 
 - writes are serialized by a mutex;
 - product totals and deletions scan all users;
-- the RWO PVC and file format are designed for one writer;
+- a lifetime process lock and mutex enforce one writer on a supported filesystem;
 - a large dataset would eventually justify SQLite or a managed database.
 
 ### Standard-library HTTP server
 
 I stayed with Go 1.26's method-aware `http.ServeMux` because it covers the three
 required routes and a web framework would add little value here. The server has
-header/read/write/idle timeouts, a 1 MiB JSON body limit, structured request
+header/read/write/idle timeouts, a 1 MiB request body limit, structured request
 logging, and graceful SIGINT/SIGTERM shutdown. JSON, query, and form input are
 accepted for POST because the assignment specifies parameters but not their
-wire encoding.
+wire encoding. JSON is authoritative when selected; form values override query
+values. Invalid encodings and null JSON fail before storage is called. Unsupported
+content types return `415`, malformed input `400`, and oversized bodies `413`.
 
 ## Operational choices
 
@@ -153,25 +174,30 @@ validated before Docker or Kubernetes is involved.
 
 ## Testing strategy
 
-- Store tests cover reload, deletion, concurrent writes, and integer overflow.
+- Store tests cover reload, deletion, concurrent writes, integer overflow,
+  interprocess exclusion, corrupt files, and failures before/after rename.
 - HTTP tests cover successful methods, validation, malformed input, and body
   limits.
 - Controller tests cover initial creation, deletion recovery, terminal-Pod
-  replacement, duplicate cleanup, readiness, and restart status.
+  replacement, termination waits, template rollouts, long names, duplicate cleanup,
+  readiness, observed generation, and explicit zero restart status.
 - Server tests verify fatal listen errors, graceful shutdown, request metrics,
   and goroutine leaks.
 - `go test -race`, `go vet`, golangci-lint, and `govulncheck` are CI gates.
 - `e2e/e2e.sh` writes data, deletes the application Pod, reads the data through
-  its replacement, creates a crashing EtherealPod, and waits for `RESTARTS` to
-  increase.
+  its replacement, rolls out a changed template and checks persistence again,
+  then creates a crashing EtherealPod and waits for `RESTARTS` to increase.
+  HTTP clients stop waiting on either successful or failed completion; only the
+  initial cleanup explicitly accepts an HTTP `404`.
 
 ## Known limits and production evolution
 
 The JSON store is the clearest time-boxed choice in this solution. I would not
 stretch it to multiple application replicas: that would change the consistency
-model and call for a database rather than more locking around one file. With
-more time, my first controller improvement would be a template hash and a
-controlled Pod rollout when the desired template changes.
+model and call for a database rather than more locking around one file. Serial
+rollouts deliberately trade availability for writer exclusion. A force-deleted
+Pod can leave a running process behind, so normal deletion and reliable volume
+locking remain operational requirements.
 
 The remaining production steps I would discuss are:
 

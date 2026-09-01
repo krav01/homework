@@ -21,19 +21,33 @@ cleanup() {
 trap cleanup EXIT
 
 api_request() {
+  local allow_not_found=false
+  if [[ "${1:-}" == "--allow-not-found" ]]; then
+    allow_not_found=true
+    shift
+  fi
   local client_name="sunday-e2e-client-$$-$RANDOM"
-  local response=""
+  local response="" phase="" status=""
+  local deadline=$((SECONDS + 90))
 
-  # Short-lived clients can exit before kubectl attaches to their output.
-  # Wait for completion, then read the response from the retained Pod logs.
+  # Retain logs and observe both terminal phases: failed clients must fail fast.
   kubectl run "$client_name" -n "$namespace" \
     --restart=Never \
     --labels="app.kubernetes.io/name=$client_label" \
     --image=curlimages/curl:8.12.1 \
-    --command -- curl --fail-with-body --silent --show-error "$@" >/dev/null
+    --command -- curl --silent --show-error --connect-timeout 5 --max-time 20 \
+    --write-out '\n%{http_code}' "$@" >/dev/null
 
-  if ! kubectl wait pod "$client_name" -n "$namespace" \
-    --for=jsonpath='{.status.phase}'=Succeeded --timeout=90s >/dev/null; then
+  while (( SECONDS < deadline )); do
+    phase="$(kubectl get pod "$client_name" -n "$namespace" \
+      -o jsonpath='{.status.phase}')" || return 1
+    if [[ "$phase" == "Succeeded" || "$phase" == "Failed" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$phase" != "Succeeded" ]]; then
+    echo "API client finished in phase $phase (or timed out)" >&2
     kubectl logs "$client_name" -n "$namespace" >&2 || true
     kubectl describe pod "$client_name" -n "$namespace" >&2 || true
     return 1
@@ -42,6 +56,13 @@ api_request() {
   response="$(kubectl logs "$client_name" -n "$namespace")" || return 1
   kubectl delete pod "$client_name" -n "$namespace" \
     --ignore-not-found --wait=false >/dev/null
+  status="${response##*$'\n'}"
+  response="${response%$'\n'*}"
+  if [[ ! "$status" =~ ^2[0-9][0-9]$ ]] && \
+    ! { [[ "$allow_not_found" == true && "$status" == 404 ]]; }; then
+    echo "API returned HTTP $status: $response" >&2
+    return 1
+  fi
   printf '%s' "$response"
 }
 
@@ -89,9 +110,8 @@ kubectl get eps -n "$namespace" | \
   grep -Eq '^NAME[[:space:]]+AGE[[:space:]]+RESTARTS'
 
 # Make the persistence assertion repeatable when the script is run more than once.
-api_request -X DELETE \
-  "http://$app_name/delete_product?product_name=testproduct" \
-  >/dev/null 2>&1 || true
+api_request --allow-not-found -X DELETE \
+  "http://$app_name/delete_product?product_name=testproduct" >/dev/null
 
 echo "Writing a grocery item..."
 write_response="$(api_request -X POST \
@@ -122,6 +142,25 @@ if [[ "$read_response" != *'"amount":7'* ]]; then
   exit 1
 fi
 
+echo "Updating the template and waiting for a serial rollout..."
+kubectl patch etherealpod "$app_name" -n "$namespace" --type merge \
+  -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"sunday.system/e2e-rollout\":\"$new_pod\"}}}}}" >/dev/null
+new_pod="$(wait_for_replacement "$new_pod")"
+kubectl wait etherealpod "$app_name" -n "$namespace" \
+  --for=condition=Ready --timeout=30s >/dev/null
+read_response="$(api_request \
+  "http://$app_name/get_product_amount?product_name=testproduct")"
+if [[ "$read_response" != *'"amount":7'* ]]; then
+  echo "data did not survive template rollout: $read_response" >&2
+  exit 1
+fi
+restarts="$(kubectl get etherealpod "$app_name" -n "$namespace" \
+  -o jsonpath='{.status.restarts}')"
+if [[ "$restarts" != 0 ]]; then
+  echo "expected an explicit zero restart count, got: $restarts" >&2
+  exit 1
+fi
+
 echo "Creating a deliberately crashing EtherealPod..."
 kubectl apply -f - >/dev/null <<EOF
 apiVersion: sunday.system/v1alpha1
@@ -144,4 +183,4 @@ echo "Reported restart count: $restarts"
 api_request -X DELETE \
   "http://$app_name/delete_product?product_name=testproduct" >/dev/null
 
-echo "E2E checks passed: API persistence, Pod self-healing, and restart reporting."
+echo "E2E checks passed: API persistence, Pod self-healing, template rollout, and restart reporting."

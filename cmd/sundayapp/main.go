@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/codex/sunday-system/internal/httpapi"
-	"github.com/codex/sunday-system/internal/store"
+	"github.com/krav01/homework/internal/httpapi"
+	"github.com/krav01/homework/internal/store"
 )
 
 func main() {

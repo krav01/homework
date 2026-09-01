@@ -15,7 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	sundayv1alpha1 "github.com/codex/sunday-system/api/v1alpha1"
+	sundayv1alpha1 "github.com/krav01/homework/api/v1alpha1"
 )
 
 func TestEtherealPodReconciler_CreatesManagedPod(t *testing.T) {

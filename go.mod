@@ -1,4 +1,4 @@
-module github.com/codex/sunday-system
+module github.com/krav01/homework
 
 go 1.26.6
 

@@ -12,7 +12,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/codex/sunday-system/internal/store"
+	"github.com/krav01/homework/internal/store"
 )
 
 const maxBodyBytes = 1 << 20
