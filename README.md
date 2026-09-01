@@ -6,7 +6,7 @@ My Go and Kubernetes home assignment: a custom controller that restores a
 managed Pod after deletion, paired with a groceries API that keeps its data
 across Pod replacements.
 
-**Author:** [Vladimir Kravchuk (@krav01)](https://github.com/krav01)  
+**Author:** [Vladimir Krauchuk (@krav01)](https://github.com/krav01)  
 **Stack:** Go · Kubernetes · controller-runtime · Docker · kind · GitHub Actions
 
 I split the project into two components:
