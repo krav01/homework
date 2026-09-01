@@ -14,7 +14,7 @@ type EtherealPodSpec struct {
 type EtherealPodStatus struct {
 	PodName    string             `json:"podName,omitempty"`
 	Phase      corev1.PodPhase    `json:"phase,omitempty"`
-	Restarts   int32              `json:"restarts,omitempty"`
+	Restarts   int32              `json:"restarts"`
 	Ready      bool               `json:"ready,omitempty"`
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
