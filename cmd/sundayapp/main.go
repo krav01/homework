@@ -24,13 +24,15 @@ func main() {
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run(logger *slog.Logger) (returnErr error) {
 	dataPath := envOrDefault("DATA_PATH", "/data/sunday.json")
 	address := envOrDefault("HTTP_ADDR", ":8080")
 	groceries, err := store.NewFileStore(dataPath)
 	if err != nil {
 		return fmt.Errorf("open grocery store: %w", err)
 	}
+
+	defer func() { returnErr = errors.Join(returnErr, groceries.Close()) }()
 
 	server := &http.Server{
 		Addr:              address,
