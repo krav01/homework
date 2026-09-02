@@ -168,6 +168,21 @@ system, runs `make e2e`, and prints cluster diagnostics if anything fails.
 For a short reviewer-facing walkthrough, including discussion points, follow
 [`docs/DEMO.md`](docs/DEMO.md).
 
+Each GitHub Actions acceptance run also records a real terminal demonstration.
+Open a successful **Verify Sunday System** run, download the
+**sunday-system-demo** artifact, and open `sunday-demo.html` locally. It replays
+the actual API responses, Pod replacement, template rollout, and restart count
+with Play/Pause and speed controls; it needs no external scripts or network.
+The artifact also contains an asciicast v2 recording and a plain-text transcript.
+
+## Automated security
+
+CodeQL analyzes Go changes and runs weekly with the extended security query
+suite. `govulncheck` remains part of the required Go quality gate. Dependabot
+checks Go modules and GitHub Actions weekly and opens update PRs; updates are
+not auto-merged. The protected `main` branch requires both Go quality and the
+Docker/Kubernetes acceptance check, including for administrators.
+
 ## Requirements traceability
 
 | Assignment requirement | Implementation |
