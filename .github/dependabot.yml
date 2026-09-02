@@ -5,6 +5,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Upgrade Kubernetes and controller-runtime minor versions together after
+    # reviewing https://github.com/kubernetes-sigs/controller-runtime#compatibility.
+    # Patch updates remain automatic; minor/major upgrades need a separate PR.
+    ignore:
+      - dependency-name: "k8s.io/*"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "sigs.k8s.io/controller-runtime"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       go-compatible:
         update-types: [minor, patch]
