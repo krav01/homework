@@ -32,6 +32,9 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      - name: Test demo recorder
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
       - name: Test with race detector
         run: go test -race -shuffle=on -count=1 ./...
 
@@ -68,7 +71,19 @@ jobs:
         run: docker image inspect sunday-controller:dev sunday-app:dev >/dev/null
 
       - name: Run live-cluster acceptance checks
-        run: make e2e
+        run: python3 tools/record_demo.py --output work/sunday-demo -- ./e2e/e2e.sh
+
+      - name: Upload recorded demo
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: sunday-system-demo
+          path: |
+            work/sunday-demo.cast
+            work/sunday-demo.html
+            work/sunday-demo.txt
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Collect diagnostics on failure
         if: failure()

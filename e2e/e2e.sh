@@ -132,6 +132,7 @@ if [[ "$write_response" != *'"total":7'* ]]; then
   echo "unexpected write response: $write_response" >&2
   exit 1
 fi
+echo "POST /write -> $write_response"
 
 old_pod="$(kubectl get etherealpod "$app_name" -n "$namespace" \
   -o jsonpath='{.status.podName}')"
@@ -151,6 +152,7 @@ if [[ "$read_response" != *'"amount":7'* ]]; then
   echo "data did not survive Pod replacement: $read_response" >&2
   exit 1
 fi
+echo "GET after Pod replacement -> $read_response"
 
 echo "Updating the template and waiting for a serial rollout..."
 kubectl patch etherealpod "$app_name" -n "$namespace" --type merge \
@@ -164,6 +166,7 @@ if [[ "$read_response" != *'"amount":7'* ]]; then
   echo "data did not survive template rollout: $read_response" >&2
   exit 1
 fi
+echo "GET after template rollout -> $read_response"
 restarts="$(kubectl get etherealpod "$app_name" -n "$namespace" \
   -o jsonpath='{.status.restarts}')"
 if [[ "$restarts" != 0 ]]; then

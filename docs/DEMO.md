@@ -87,6 +87,22 @@ kubectl get eps -n sunday-system
 
 The E2E script cleans up its crashing resource before it exits.
 
+### Replay a recorded run
+
+Every **Verify Sunday System** run produces a **sunday-system-demo** artifact.
+Download it from the run's summary and open `sunday-demo.html` in a browser.
+This is a recording of real test output, not a simulated terminal. The header
+identifies the recorded commit and timestamp, and failed runs are marked FAILED.
+Recordings are retained for 30 days; download one to keep it longer.
+
+To record a fresh local deployment check:
+
+```bash
+python3 tools/record_demo.py --output work/sunday-demo -- ./e2e/e2e.sh
+```
+
+The `.cast` file can also be replayed with `asciinema play work/sunday-demo.cast`.
+
 ## 5. Demonstrate a template rollout
 
 Change a template annotation and watch the old Pod terminate before a new Pod
