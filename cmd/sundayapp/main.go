@@ -95,13 +95,55 @@ func requestLogger(logger *slog.Logger, next http.Handler) http.Handler {
 			details.status = http.StatusOK
 		}
 		logger.Info("HTTP request",
-			"method", request.Method,
-			"path", request.URL.Path,
+			"method", logMethod(request.Method),
+			"path", logPath(request.URL.Path),
 			"status", details.status,
 			"bytes", details.bytes,
 			"duration", time.Since(started),
 		)
 	})
+}
+
+// Log fixed labels rather than arbitrary client input. JSON encoding protects
+// record boundaries; the allowlist also bounds log size and avoids leaking URLs.
+func logMethod(method string) string {
+	switch method {
+	case http.MethodGet:
+		return http.MethodGet
+	case http.MethodHead:
+		return http.MethodHead
+	case http.MethodPost:
+		return http.MethodPost
+	case http.MethodPut:
+		return http.MethodPut
+	case http.MethodPatch:
+		return http.MethodPatch
+	case http.MethodDelete:
+		return http.MethodDelete
+	case http.MethodOptions:
+		return http.MethodOptions
+	case http.MethodConnect:
+		return http.MethodConnect
+	case http.MethodTrace:
+		return http.MethodTrace
+	default:
+		return "OTHER"
+	}
+}
+
+func logPath(path string) string {
+	switch path {
+	case "/healthz":
+		return "/healthz"
+	case "/get_product_amount":
+		return "/get_product_amount"
+	case "/write":
+		return "/write"
+	case "/delete_product":
+		return "/delete_product"
+	default:
+		return "<unmatched>"
+	}
 }
 
 type responseDetailsWriter struct {

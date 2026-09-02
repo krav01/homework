@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -65,6 +66,78 @@ func TestRequestLogger_RecordsStatusAndBytes(t *testing.T) {
 	got := logs.String()
 	if !strings.Contains(got, `"status":201`) || !strings.Contains(got, `"bytes":2`) {
 		t.Fatalf("request log = %s, want status and byte count", got)
+	}
+}
+
+func TestRequestLoggerBoundsUserInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		wantMethod string
+		wantPath   string
+	}{
+		{name: "health", method: "GET", target: "/healthz", wantMethod: "GET", wantPath: "/healthz"},
+		{
+			name: "read", method: "GET", target: "/get_product_amount",
+			wantMethod: "GET", wantPath: "/get_product_amount",
+		},
+		{
+			name: "write hides query", method: "POST", target: "/write?token=secret",
+			wantMethod: "POST", wantPath: "/write",
+		},
+		{
+			name: "delete", method: "DELETE", target: "/delete_product",
+			wantMethod: "DELETE", wantPath: "/delete_product",
+		},
+		{name: "newline", method: "GET", target: "/secret%0aFORGED", wantMethod: "GET", wantPath: "<unmatched>"},
+		{name: "quotes", method: "GET", target: "/%22secret%22", wantMethod: "GET", wantPath: "<unmatched>"},
+		{
+			name: "large input", method: strings.Repeat("secret", 1000),
+			target: "/" + strings.Repeat("secret", 1000), wantMethod: "OTHER", wantPath: "<unmatched>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			handler := requestLogger(logger, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			request := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			request.Method = tt.method
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("handler status = %d, want 204", response.Code)
+			}
+			got := logs.String()
+			containsInput := strings.Contains(got, "secret")
+			invalidRecordCount := strings.Count(got, "\n") != 1
+			oversized := len(got) > 400
+			if containsInput || invalidRecordCount || oversized {
+				t.Fatalf("request log contains raw input or unexpected records: %q", got)
+			}
+			var entry struct {
+				Method string `json:"method"`
+				Path   string `json:"path"`
+			}
+			if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+				t.Fatalf("decode request log: %v", err)
+			}
+			if entry.Method != tt.wantMethod || entry.Path != tt.wantPath {
+				t.Fatalf(
+					"labels = (%q, %q), want (%q, %q)",
+					entry.Method,
+					entry.Path,
+					tt.wantMethod,
+					tt.wantPath,
+				)
+			}
+		})
 	}
 }
 
