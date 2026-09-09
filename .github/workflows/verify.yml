@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Install kind and kubectl
-        uses: helm/kind-action@v1.14.0
+        uses: helm/kind-action@v1.15.0
         with:
           install_only: true
           version: v0.32.0
