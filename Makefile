@@ -1,4 +1,4 @@
-.PHONY: build test test-race lint fmt images deploy e2e clean
+.PHONY: build test test-race test-envtest lint fmt images deploy e2e clean
 
 build:
 	mkdir -p bin
@@ -10,6 +10,10 @@ test:
 
 test-race:
 	go test -race ./...
+
+test-envtest:
+	KUBEBUILDER_ASSETS="$$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 use -p path 1.36.x\!)" \
+		go test -tags=envtest -count=1 ./internal/controller -run '^TestEnvtest'
 
 lint:
 	golangci-lint run ./...
