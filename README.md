@@ -24,9 +24,10 @@ while that happens. That led to two separate responsibilities. Kubernetes
 restarts a failed container in the same Pod, while the custom controller
 replaces a Pod that is deleted or reaches a terminal phase.
 
-I kept the solution small enough for a home assignment. I used the Go standard library where it was enough and introduced abstractions
-only at boundaries that benefited from testing. The result is deliberately
-small, but the tradeoffs and the next production steps are explicit.
+I kept the solution small enough for a home assignment. I used the Go standard
+library where it was enough and introduced abstractions only at boundaries that
+benefited from testing. The result is deliberately small, but the tradeoffs and
+the next production steps are explicit.
 
 ## Architecture
 
@@ -56,9 +57,8 @@ test without adding a large application framework.
 Go and controller-runtime provide the native Kubernetes control loop; direct
 Pod ownership keeps restart reporting unambiguous; atomic JSON persistence on
 a PVC with a lifetime writer lock provides single-writer persistence without
-operating a database. The
-alternatives I considered, failure semantics, and production tradeoffs are
-documented in
+operating a database. The alternatives I considered, failure semantics, and
+production tradeoffs are documented in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Prerequisites and quick start
@@ -89,10 +89,9 @@ kubectl port-forward -n sunday-system service/sunday-app 8080:80
 
 | Method | Endpoint | Behavior |
 | --- | --- | --- |
-| `POST` | `/write` | Add a quantity of a product for a user |
+| `POST` | `/write` | Add a quantity of a product for a user; supports durable idempotency |
 | `GET` | `/get_product_amount` | Sum a product's quantity across all users |
 | `DELETE` | `/delete_product` | Remove a product from every user |
-
 
 Names and product names must contain lowercase ASCII letters. Amounts must be
 positive integers. `POST /write` accepts JSON, URL query parameters, or form
@@ -102,9 +101,18 @@ Bodies are limited to 1 MiB. Malformed or null JSON and invalid form/query
 encoding return `400`, oversized bodies return `413`, and unsupported content
 types return `415`. A body requires an explicit supported content type.
 
+`POST /write` also accepts an optional `Idempotency-Key` header. The key may be
+up to 128 visible ASCII bytes. The first request atomically persists both the
+increment and a fingerprint of the operation. Repeating the same request with
+the same key returns the original result without incrementing again, including
+after a process or Pod replacement. Replayed responses include
+`Idempotency-Replayed: true`. Reusing the same key with a different user,
+product, or amount returns `409 Conflict`.
+
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/write \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-write-1' \
   -d '{"user_id":"loki","product_name":"apple","amount":1}'
 
 curl -sS 'http://127.0.0.1:8080/get_product_amount?product_name=apple'
@@ -116,6 +124,24 @@ curl -i -X DELETE \
 Product amounts are summed across all users. Deleting a product removes it
 from every user. Missing products return amount `0` on GET and `404` on
 DELETE.
+
+## Persistence and retry semantics
+
+The store writes one versioned JSON state using temporary-file write, file
+`fsync`, atomic rename, and directory `fsync`. Existing files from the original
+groceries-only format are still accepted and are migrated to the versioned
+format on the next successful write.
+
+Idempotency records are stored in the same atomic state transition as the data
+they protect. The raw `Idempotency-Key` is not persisted; the store keeps its
+SHA-256 digest and a request fingerprint. This means a successful operation and
+its replay protection cannot diverge across a normal restart.
+
+If directory sync fails after rename, reads reflect the replaced file and the
+store enters a durability-unknown state. Readiness then returns `503` and new
+writes are blocked until the store is reopened. For retryable increment
+operations, using a stable `Idempotency-Key` avoids applying a committed write
+twice after recovery.
 
 ## Self-healing demonstration
 
@@ -130,7 +156,9 @@ kubectl get pods -n sunday-system -w
 ```
 
 Write an item before deletion and read it after the replacement becomes Ready
-to verify that PVC-backed data survived.
+to verify that PVC-backed data survived. The automated E2E additionally replays
+an idempotent write against the replacement Pod and verifies that the amount is
+not incremented twice.
 
 Container crashes are handled by the enforced `restartPolicy: Always`; the
 controller reports the sum of init- and application-container restart counts
@@ -152,18 +180,26 @@ builds Linux Go binaries inside Docker.
 make build
 make test
 make test-race
-make lint       # requires golangci-lint v2
-make e2e        # requires a deployment created by ./requirements.sh
+make test-envtest # real kube-apiserver + etcd API semantics
+make lint         # requires golangci-lint v2
+make e2e          # requires a deployment created by ./requirements.sh
 ```
 
-The E2E check writes data, deletes the application Pod, verifies that the
-replacement can read the persisted value, rolls out a template change, checks
-that the zero restart count is explicit, then starts a deliberately crashing
-EtherealPod and verifies that `RESTARTS` increases.
+The fast unit tests use the controller-runtime fake client where appropriate.
+`make test-envtest` fills the integration layer with a real Kubernetes API
+server and etcd, verifying CRD admission and status-subresource semantics. The
+kind E2E then exercises the complete deployed system.
+
+The E2E check validates CRD admission, writes data with an idempotency key,
+deletes the application Pod, verifies that the replacement can read the
+persisted value, replays the same write without duplicating it, rolls out a
+template change, checks that the zero restart count is explicit, then starts a
+deliberately crashing EtherealPod and verifies that `RESTARTS` increases.
 
 GitHub Actions runs the same acceptance check on an `ubuntu-latest` runner. It
 builds both Docker images, creates a disposable kind cluster, deploys the
-system, runs `make e2e`, and prints cluster diagnostics if anything fails.
+system, runs the live acceptance scenario, and prints cluster diagnostics if
+anything fails.
 
 For a short reviewer-facing walkthrough, including discussion points, follow
 [`docs/DEMO.md`](docs/DEMO.md).
@@ -187,11 +223,12 @@ Docker/Kubernetes acceptance check, including for administrators.
 
 | Assignment requirement | Implementation |
 | --- | --- |
-| Exactly one active Pod per EtherealPod | Owner-reference discovery, termination waits, and deterministic duplicate cleanup |
+| Exactly one active Pod per EtherealPod | Owner-reference discovery, indexed lookup, termination waits, and deterministic duplicate cleanup |
 | Recovery after a crash | Enforced `restartPolicy: Always`; terminal Pods are replaced |
 | Recovery after Pod deletion | Owned-Pod watch triggers creation of a replacement |
 | `NAME AGE RESTARTS` in `kubectl get eps` | CRD printer columns and status restart aggregation |
-| Sunday data never disappears with its Pod | Atomic file persistence on a PersistentVolumeClaim |
+| Sunday data never disappears with its Pod | Atomic versioned persistence on a PersistentVolumeClaim |
+| Safe retries for increments | Durable `Idempotency-Key` record committed atomically with the write |
 | GET, POST, DELETE API | Typed routes, input validation, persistence, and HTTP tests |
 
 ## Assumptions
@@ -209,11 +246,18 @@ Docker/Kubernetes acceptance check, including for administrators.
   application runs.
 - Corrupt or empty existing data files fail startup. If directory sync fails
   after rename, reads reflect the new file, but further writes return `500`
-  until the store is reopened. The failed request may already have changed
-  data: inspect the value before retrying an increment.
+  until the store is reopened. A write without an idempotency key may already
+  have changed data, so its value must be inspected before blindly retrying.
+- Idempotency records currently have no TTL or automatic compaction. That is
+  acceptable for this bounded home assignment; a production implementation
+  would define a retention window and cleanup strategy.
+- Replaying a previously successful idempotent request returns its historical
+  result even if the product was later deleted. The key identifies the original
+  operation, not the current product state.
 - Kubernetes must establish a CRD before resources of its new kind can be
   decoded. For that reason `requirements.sh` installs the CRD first and then
   applies the self-contained workload resources in `submission.yaml`.
+
 ## Scope and next steps
 
 I built this as a focused home assignment. The controller converges toward
@@ -223,7 +267,8 @@ rollouts favor storage safety and include downtime; forced Pod deletion and
 filesystems without reliable locking are outside this guarantee.
 
 For a production version, I would add authentication and rate limiting,
-backups, and a database when multiple writers or larger datasets are required.
+idempotency-record retention, backups, and a database when multiple writers or
+larger datasets are required.
 
 - [Architecture and design decisions](docs/ARCHITECTURE.md)
 - [Step-by-step demonstration](docs/DEMO.md)
