@@ -117,7 +117,7 @@ echo "Checking the deployed EtherealPod and printer columns..."
 kubectl wait etherealpod "$app_name" -n "$namespace" \
   --for=condition=Ready --timeout=120s >/dev/null
 kubectl get eps -n "$namespace" | \
-  grep -Eq '^NAME[[:space:]]+AGE[[:space:]]+RESTARTS'
+  grep -Eq '^NAME[[:space:]]+AGE[[:space:]]+RESTARTS[[:space:]]+STATUS'
 
 echo "Checking CRD admission rejects invalid Pod templates..."
 if kubectl apply -f - >/dev/null 2>&1 <<EOF
