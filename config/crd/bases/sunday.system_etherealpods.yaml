@@ -24,6 +24,9 @@ spec:
         - name: Restarts
           type: integer
           jsonPath: .status.restarts
+        - name: Status
+          type: string
+          jsonPath: .status.conditions[?(@.type=='Ready')].reason
       schema:
         openAPIV3Schema:
           type: object

@@ -25,6 +25,7 @@ type EtherealPodStatus struct {
 // +kubebuilder:resource:shortName=ep;eps
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:printcolumn:name="Restarts",type="integer",JSONPath=".status.restarts"
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 type EtherealPod struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
