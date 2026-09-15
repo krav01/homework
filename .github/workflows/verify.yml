@@ -38,6 +38,9 @@ jobs:
       - name: Test with race detector
         run: go test -race -shuffle=on -count=1 ./...
 
+      - name: Test Kubernetes API semantics with envtest
+        run: make test-envtest
+
       - name: Vet
         run: go vet ./...
 
