@@ -6,6 +6,7 @@ app_name="${SUNDAY_APP_NAME:-sunday-app}"
 crash_name="sunday-e2e-crash"
 invalid_name="sunday-e2e-invalid"
 client_label="sunday-e2e-client"
+idempotency_key="sunday-e2e-$(date +%s)-$$-$RANDOM"
 
 if ! command -v kubectl >/dev/null 2>&1; then
   echo "required command is missing: kubectl" >&2
@@ -141,9 +142,10 @@ wait_for_service
 api_request --allow-not-found -X DELETE \
   "http://$app_name/delete_product?product_name=testproduct" >/dev/null
 
-echo "Writing a grocery item..."
+echo "Writing a grocery item with an idempotency key..."
 write_response="$(api_request -X POST \
   -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $idempotency_key" \
   -d '{"user_id":"testuser","product_name":"testproduct","amount":7}' \
   "http://$app_name/write")"
 if [[ "$write_response" != *'"total":7'* ]]; then
@@ -171,6 +173,24 @@ if [[ "$read_response" != *'"amount":7'* ]]; then
   exit 1
 fi
 echo "GET after Pod replacement -> $read_response"
+
+echo "Replaying the committed write after Pod replacement..."
+replay_response="$(api_request -X POST \
+  -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $idempotency_key" \
+  -d '{"user_id":"testuser","product_name":"testproduct","amount":7}' \
+  "http://$app_name/write")"
+if [[ "$replay_response" != *'"total":7'* ]]; then
+  echo "unexpected replay response: $replay_response" >&2
+  exit 1
+fi
+read_response="$(api_request \
+  "http://$app_name/get_product_amount?product_name=testproduct")"
+if [[ "$read_response" != *'"amount":7'* ]]; then
+  echo "idempotent replay duplicated the write: $read_response" >&2
+  exit 1
+fi
+echo "Idempotent replay preserved amount -> $read_response"
 
 echo "Updating the template and waiting for a serial rollout..."
 kubectl patch etherealpod "$app_name" -n "$namespace" --type merge \
@@ -214,4 +234,4 @@ echo "Reported restart count: $restarts"
 api_request -X DELETE \
   "http://$app_name/delete_product?product_name=testproduct" >/dev/null
 
-echo "E2E checks passed: CRD validation, API persistence, Pod self-healing, template rollout, and restart reporting."
+echo "E2E checks passed: CRD validation, durable idempotency, API persistence, Pod self-healing, template rollout, and restart reporting."
