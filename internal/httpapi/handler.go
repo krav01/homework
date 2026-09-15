@@ -15,13 +15,17 @@ import (
 	"github.com/krav01/homework/internal/store"
 )
 
-const maxBodyBytes = 1 << 20
+const (
+	maxBodyBytes      = 1 << 20
+	maxIdempotencyKey = 128
+)
 
 var lowercaseName = regexp.MustCompile(`^[a-z]+$`)
 
 // GroceryStore is the persistence boundary used by the HTTP layer.
 type GroceryStore interface {
 	Add(user, product string, amount int64) (int64, error)
+	AddIdempotent(user, product string, amount int64, key string) (total int64, replayed bool, err error)
 	ProductAmount(product string) int64
 	DeleteProduct(product string) (bool, error)
 }
@@ -146,16 +150,35 @@ func writeProduct(groceries GroceryStore) http.HandlerFunc {
 			writeError(writer, http.StatusBadRequest, errors.New("amount must be positive"))
 			return
 		}
+		idempotencyKey := request.Header.Get("Idempotency-Key")
+		if err := validateIdempotencyKey(idempotencyKey); err != nil {
+			writeError(writer, http.StatusBadRequest, err)
+			return
+		}
 
-		total, err := groceries.Add(body.UserID, body.ProductName, body.Amount)
+		var total int64
+		var replayed bool
+		var err error
+		if idempotencyKey == "" {
+			total, err = groceries.Add(body.UserID, body.ProductName, body.Amount)
+		} else {
+			total, replayed, err = groceries.AddIdempotent(body.UserID, body.ProductName, body.Amount, idempotencyKey)
+		}
 		if errors.Is(err, store.ErrAmountOverflow) {
 			writeError(writer, http.StatusUnprocessableEntity, err)
+			return
+		}
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			writeError(writer, http.StatusConflict, err)
 			return
 		}
 		if err != nil {
 			slog.ErrorContext(request.Context(), "persist product", "error", err)
 			writeError(writer, http.StatusInternalServerError, errors.New("persist product"))
 			return
+		}
+		if replayed {
+			writer.Header().Set("Idempotency-Replayed", "true")
 		}
 		writeJSON(writer, http.StatusCreated, map[string]any{
 			"user_id":      body.UserID,
@@ -196,6 +219,21 @@ func deleteProduct(groceries GroceryStore) http.HandlerFunc {
 func validateName(field, value string) error {
 	if !lowercaseName.MatchString(value) {
 		return fmt.Errorf("%s must contain lowercase letters only", field)
+	}
+	return nil
+}
+
+func validateIdempotencyKey(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > maxIdempotencyKey {
+		return fmt.Errorf("idempotency key must be at most %d bytes", maxIdempotencyKey)
+	}
+	for _, character := range value {
+		if character < 0x21 || character > 0x7e {
+			return errors.New("idempotency key must contain visible ASCII characters only")
+		}
 	}
 	return nil
 }
