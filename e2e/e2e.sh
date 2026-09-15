@@ -4,6 +4,7 @@ set -euo pipefail
 namespace="${SUNDAY_NAMESPACE:-sunday-system}"
 app_name="${SUNDAY_APP_NAME:-sunday-app}"
 crash_name="sunday-e2e-crash"
+invalid_name="sunday-e2e-invalid"
 client_label="sunday-e2e-client"
 
 if ! command -v kubectl >/dev/null 2>&1; then
@@ -12,7 +13,7 @@ if ! command -v kubectl >/dev/null 2>&1; then
 fi
 
 cleanup() {
-  kubectl delete etherealpod "$crash_name" -n "$namespace" \
+  kubectl delete etherealpod "$crash_name" "$invalid_name" -n "$namespace" \
     --ignore-not-found --wait=false >/dev/null 2>&1 || true
   kubectl delete pod -n "$namespace" \
     -l "app.kubernetes.io/name=$client_label" \
@@ -117,6 +118,23 @@ kubectl wait etherealpod "$app_name" -n "$namespace" \
 kubectl get eps -n "$namespace" | \
   grep -Eq '^NAME[[:space:]]+AGE[[:space:]]+RESTARTS'
 
+echo "Checking CRD admission rejects invalid Pod templates..."
+if kubectl apply -f - >/dev/null 2>&1 <<EOF
+apiVersion: sunday.system/v1alpha1
+kind: EtherealPod
+metadata:
+  name: $invalid_name
+  namespace: $namespace
+spec:
+  template:
+    spec:
+      containers: []
+EOF
+then
+  echo "CRD accepted an EtherealPod with no containers" >&2
+  exit 1
+fi
+
 wait_for_service
 
 # Make the persistence assertion repeatable when the script is run more than once.
@@ -196,4 +214,4 @@ echo "Reported restart count: $restarts"
 api_request -X DELETE \
   "http://$app_name/delete_product?product_name=testproduct" >/dev/null
 
-echo "E2E checks passed: API persistence, Pod self-healing, template rollout, and restart reporting."
+echo "E2E checks passed: CRD validation, API persistence, Pod self-healing, template rollout, and restart reporting."
