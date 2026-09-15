@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	ownerUIDLabel          = "sunday.system/etherealpod-uid"
-	ownerNameLabel         = "sunday.system/etherealpod"
-	templateHashAnnotation = "sunday.system/template-hash"
-	ownerNameAnnotation    = "sunday.system/etherealpod-name"
+	ownerUIDLabel           = "sunday.system/etherealpod-uid"
+	ownerNameLabel          = "sunday.system/etherealpod"
+	templateHashAnnotation  = "sunday.system/template-hash"
+	ownerNameAnnotation     = "sunday.system/etherealpod-name"
+	managedPodOwnerUIDField = "sunday.system/controller-owner-uid"
 )
 
 // EtherealPodReconciler keeps one active Pod for every EtherealPod resource.
@@ -118,8 +119,20 @@ func (r *EtherealPodReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 func (r *EtherealPodReconciler) managedPods(ctx context.Context, ep *sundayv1alpha1.EtherealPod) ([]*corev1.Pod, error) {
 	var list corev1.PodList
-	if err := r.List(ctx, &list, client.InNamespace(ep.Namespace)); err != nil {
-		return nil, err
+	indexedErr := r.List(
+		ctx,
+		&list,
+		client.InNamespace(ep.Namespace),
+		client.MatchingFields{managedPodOwnerUIDField: string(ep.UID)},
+	)
+	if indexedErr != nil {
+		// The manager registers the field index before the controller starts. The
+		// fallback keeps alternate clients (notably lightweight test clients) correct
+		// and avoids turning an index problem into a reconciliation outage.
+		list.Items = nil
+		if err := r.List(ctx, &list, client.InNamespace(ep.Namespace)); err != nil {
+			return nil, fmt.Errorf("indexed list: %v; fallback list: %w", indexedErr, err)
+		}
 	}
 
 	pods := make([]*corev1.Pod, 0, len(list.Items))
@@ -211,10 +224,27 @@ func (r *EtherealPodReconciler) updateStatusReason(ctx context.Context, ep *sund
 
 // SetupWithManager registers watches for EtherealPods and their owned Pods.
 func (r *EtherealPodReconciler) SetupWithManager(manager ctrl.Manager) error {
+	if err := manager.GetFieldIndexer().IndexField(
+		context.Background(),
+		&corev1.Pod{},
+		managedPodOwnerUIDField,
+		podControllerUIDIndex,
+	); err != nil {
+		return fmt.Errorf("index managed Pods by controller UID: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(manager).
 		For(&sundayv1alpha1.EtherealPod{}).
 		Owns(&corev1.Pod{}).
 		Complete(r)
+}
+
+func podControllerUIDIndex(object client.Object) []string {
+	owner := metav1.GetControllerOf(object)
+	if owner == nil || owner.UID == "" {
+		return nil
+	}
+	return []string{string(owner.UID)}
 }
 
 func partitionPods(pods []*corev1.Pod) (active, terminal []*corev1.Pod) {
