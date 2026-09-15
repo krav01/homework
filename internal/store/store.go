@@ -67,6 +67,18 @@ func (s *FileStore) Close() error {
 	return nil
 }
 
+// Ready reports whether the store can safely accept writes. Reads can still be
+// available after a durability failure, but the HTTP service must stop receiving
+// traffic until an operator reopens the store and re-establishes a known state.
+func (s *FileStore) Ready() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.lock == nil {
+		return ErrStoreClosed
+	}
+	return s.writeErr
+}
+
 // commit keeps memory consistent with a successful rename even if the directory
 // sync fails. Further writes are rejected until the store is reopened.
 func (s *FileStore) commit(next state) error {

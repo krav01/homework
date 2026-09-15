@@ -135,6 +135,10 @@ func logPath(path string) string {
 	switch path {
 	case "/healthz":
 		return "/healthz"
+	case "/livez":
+		return "/livez"
+	case "/readyz":
+		return "/readyz"
 	case "/get_product_amount":
 		return "/get_product_amount"
 	case "/write":

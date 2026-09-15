@@ -26,16 +26,37 @@ type GroceryStore interface {
 	DeleteProduct(product string) (bool, error)
 }
 
+type readinessStore interface {
+	Ready() error
+}
+
 // NewHandler constructs the Sunday API routes.
 func NewHandler(groceries GroceryStore) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
-	})
+	mux.HandleFunc("GET /healthz", live)
+	mux.HandleFunc("GET /livez", live)
+	mux.HandleFunc("GET /readyz", ready(groceries))
 	mux.HandleFunc("GET /get_product_amount", getProductAmount(groceries))
 	mux.HandleFunc("POST /write", writeProduct(groceries))
 	mux.HandleFunc("DELETE /delete_product", deleteProduct(groceries))
 	return mux
+}
+
+func live(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func ready(groceries GroceryStore) http.HandlerFunc {
+	return func(writer http.ResponseWriter, _ *http.Request) {
+		checker, ok := groceries.(readinessStore)
+		if ok {
+			if err := checker.Ready(); err != nil {
+				writeError(writer, http.StatusServiceUnavailable, errors.New("store is not ready"))
+				return
+			}
+		}
+		writeJSON(writer, http.StatusOK, map[string]string{"status": "ready"})
+	}
 }
 
 func getProductAmount(groceries GroceryStore) http.HandlerFunc {
