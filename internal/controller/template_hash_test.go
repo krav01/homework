@@ -12,12 +12,12 @@ func TestTemplateHashIsDeterministic(t *testing.T) {
 
 	template := &corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
-			Labels: map[string]string{"z": "1", "a": "2", "m": "3"},
+			Labels:      map[string]string{"z": "1", "a": "2", "m": "3"},
 			Annotations: map[string]string{"foo": "bar", "abc": "xyz"},
 		},
 		Spec: corev1.PodSpec{
 			NodeSelector: map[string]string{"zone": "west", "disk": "ssd"},
-			Containers: []corev1.Container{{Name: "app", Image: "example:latest"}},
+			Containers:   []corev1.Container{{Name: "app", Image: "example:latest"}},
 		},
 	}
 
