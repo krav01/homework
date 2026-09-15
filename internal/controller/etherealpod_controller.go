@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -131,7 +132,10 @@ func (r *EtherealPodReconciler) managedPods(ctx context.Context, ep *sundayv1alp
 		// and avoids turning an index problem into a reconciliation outage.
 		list.Items = nil
 		if err := r.List(ctx, &list, client.InNamespace(ep.Namespace)); err != nil {
-			return nil, fmt.Errorf("indexed list: %v; fallback list: %w", indexedErr, err)
+			return nil, errors.Join(
+				fmt.Errorf("indexed list: %w", indexedErr),
+				fmt.Errorf("fallback list: %w", err),
+			)
 		}
 	}
 
