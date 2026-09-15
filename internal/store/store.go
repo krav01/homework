@@ -15,11 +15,11 @@ import (
 const persistedStateVersion = 1
 
 var (
-	ErrAmountOverflow       = errors.New("product amount overflow")
-	ErrIdempotencyConflict  = errors.New("idempotency key was already used with a different request")
-	ErrStoreLocked          = errors.New("store is already open by another writer")
-	ErrStoreClosed          = errors.New("store is closed")
-	ErrDurabilityUnknown    = errors.New("store durability is uncertain; reopen before writing")
+	ErrAmountOverflow      = errors.New("product amount overflow")
+	ErrIdempotencyConflict = errors.New("idempotency key was already used with a different request")
+	ErrStoreLocked         = errors.New("store is already open by another writer")
+	ErrStoreClosed         = errors.New("store is closed")
+	ErrDurabilityUnknown   = errors.New("store durability is uncertain; reopen before writing")
 )
 
 type groceriesState map[string]map[string]int64
